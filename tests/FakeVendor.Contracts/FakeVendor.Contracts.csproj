@@ -1,0 +1,3 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><AssemblyName>YourPhone.AppCore.Managed</AssemblyName></PropertyGroup>
+</Project>

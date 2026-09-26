@@ -1,0 +1,31 @@
+name: Windows build and tests
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+      - name: Build and test with synthetic vendor libraries
+        shell: pwsh
+        run: ./scripts/test.ps1
+      - name: Package CLI (no vendor DLLs or test fixtures)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path artifacts -Force | Out-Null
+          Compress-Archive -Path dist/win-x64/phonelink.exe,README.md,LICENSE -DestinationPath artifacts/phonelink-win-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phonelink-win-x64
+          path: artifacts/phonelink-win-x64.zip
+          if-no-files-found: error

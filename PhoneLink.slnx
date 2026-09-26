@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/PhoneLink.Cli/PhoneLink.Cli.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/FakeVendor.Contracts/FakeVendor.Contracts.csproj" />
+    <Project Path="tests/FakeVendor.Messaging/FakeVendor.Messaging.csproj" />
+    <Project Path="tests/FakeVendor.Notifications/FakeVendor.Notifications.csproj" />
+    <Project Path="tests/PhoneLink.Tests/PhoneLink.Tests.csproj" />
+  </Folder>
+</Solution>

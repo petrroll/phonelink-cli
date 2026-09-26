@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><AssemblyName>YourPhone.Notifications.Managed</AssemblyName></PropertyGroup>
+  <ItemGroup><ProjectReference Include="../FakeVendor.Contracts/FakeVendor.Contracts.csproj" /></ItemGroup>
+</Project>

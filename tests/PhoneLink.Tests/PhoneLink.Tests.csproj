@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><AssemblyName>PhoneLink.Tests</AssemblyName></PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/PhoneLink.Cli/PhoneLink.Cli.csproj" />
+    <ProjectReference Include="../FakeVendor.Messaging/FakeVendor.Messaging.csproj" />
+    <ProjectReference Include="../FakeVendor.Notifications/FakeVendor.Notifications.csproj" />
+  </ItemGroup>
+</Project>

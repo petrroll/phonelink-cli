@@ -1,0 +1,22 @@
+# Build output, downloaded inspection tools, and local investigation backups
+.tools/
+dist/
+artifacts/
+**/bin/
+**/obj/
+.vs/
+.idea/
+*.user
+*.suo
+
+# Never commit personal Phone Link data, logs, or exported messages
+exports/
+*.db
+*.db-*
+*.sqlite*
+*.jsonl
+*.log
+*.dmp
+*.pfx
+.env
+__pycache__/
