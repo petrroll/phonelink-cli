@@ -7,7 +7,7 @@ namespace PhoneLink;
 
 internal static class Program
 {
-    internal const string Version = "0.1.0";
+    internal const string Version = "0.1.1";
     internal const string Backend = "phonelink-managed-libraries";
 
     public static int Main(string[] args)
@@ -71,7 +71,7 @@ internal static class Program
     }
 
     private const string Help = """
-        Phone Link CLI 0.1.0 — library-backed, Windows x64, read-only
+        Phone Link CLI 0.1.1 — library-backed, Windows x64, read-only
         AI / Astra generated. Uses NON-PUBLIC APIs and is likely to break.
 
         Usage:

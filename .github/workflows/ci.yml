@@ -23,7 +23,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path artifacts -Force | Out-Null
-          Compress-Archive -Path dist/win-x64/phonelink.exe,README.md,LICENSE -DestinationPath artifacts/phonelink-win-x64.zip
+          Compress-Archive -Path dist/win-x64/phonelink.exe,README.md,SECURITY.md,LICENSE -DestinationPath artifacts/phonelink-win-x64.zip
       - uses: actions/upload-artifact@v4
         with:
           name: phonelink-win-x64

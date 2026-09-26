@@ -8,7 +8,7 @@ using YourPhone.AppCore.WinRT.DataStore;
 
 namespace PhoneLink.Tests;
 
-internal static class Suite
+internal static partial class Suite
 {
     private static string executable = "";
     private static string libraries = "";
@@ -242,6 +242,7 @@ internal static class Suite
                 Require(Fixture.Hash(phone) == phoneHash && Fixture.Hash(notifications) == notificationHash, "source database changed");
             });
             NativeTests(phone);
+            DiscoveryTests();
         }
         catch (Exception error) { failed++; Console.Error.WriteLine("SETUP FAILURE " + error); }
         finally { if (Directory.Exists(temporary)) Directory.Delete(temporary, true); }

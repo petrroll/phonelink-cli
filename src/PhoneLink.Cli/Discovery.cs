@@ -1,74 +1,75 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using PhoneLink.Interop;
 
 namespace PhoneLink;
 
-internal sealed record LibraryLocation(string Directory, string Version, string Discovery);
+internal sealed record LibraryLocation(string Directory, string Version, string Discovery,
+    string? PackageFullName = null, string? PackageVersion = null, string? Architecture = null);
 
 internal static class Discovery
 {
     public const string Family = "Microsoft.YourPhone_8wekyb3d8bbwe";
-    public static string DefaultCacheRoot => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Packages", Family, "LocalCache", "Indexed");
+    public static string DefaultCacheRoot => CacheRootFor(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));
 
-    public static LibraryLocation Libraries(string? overridePath)
+    internal static string CacheRootFor(string localApplicationData)
     {
-        if (overridePath != null) return Validate(Path.GetFullPath(overridePath), "explicit trusted path");
-        if (!OperatingSystem.IsWindows()) throw new CliException("windows_required", "Run the CLI as a Windows process.");
-        var candidates = new List<LibraryLocation>();
-        foreach (string name in PackageNames())
-        {
-            uint length = 0;
-            int result = GetPackagePathByFullName(name, ref length, 0);
-            if (result != 122 || length == 0) continue;
-            nint buffer = Marshal.AllocHGlobal(checked((int)length * sizeof(char)));
-            try
-            {
-                if (GetPackagePathByFullName(name, ref length, buffer) != 0) continue;
-                string path = Marshal.PtrToStringUni(buffer)!;
-                if (File.Exists(Path.Combine(path, "YourPhone.Messaging.Managed.dll"))) candidates.Add(Validate(path, "Windows package registration"));
-            }
-            finally { Marshal.FreeHGlobal(buffer); }
-        }
-        return candidates.OrderByDescending(c => Version.TryParse(c.Version, out var v) ? v : new Version()).FirstOrDefault()
-            ?? throw new CliException("phone_link_not_installed", "No registered Phone Link installation with the required managed libraries was found for this Windows user.");
+        if (string.IsNullOrWhiteSpace(localApplicationData) || !Path.IsPathFullyQualified(localApplicationData))
+            throw new CliException("cache_location_unavailable", "Windows did not provide an absolute LocalApplicationData path. Run as the Phone Link user or specify --cache-root.");
+        return Path.Combine(localApplicationData, "Packages", Family, "LocalCache", "Indexed");
     }
 
-    private static LibraryLocation Validate(string path, string discovery)
+    public static LibraryLocation Libraries(string? overridePath) => Libraries(overridePath,
+        new WindowsPackageSource(), File.Exists,
+        path => FileVersionInfo.GetVersionInfo(path).FileVersion,
+        RuntimeInformation.ProcessArchitecture.ToString().ToLowerInvariant());
+
+    // Keep selection separate from native enumeration so moved package volumes,
+    // redirected user folders, and update races can be tested without moving a
+    // real WindowsApps directory or accessing another user's installation.
+    internal static LibraryLocation Libraries(string? overridePath, IPackageSource packages,
+        Func<string, bool> exists, Func<string, string?> fileVersion, string architecture = "x64")
     {
-        foreach (string file in new[] { "YourPhone.AppCore.Managed.dll", "YourPhone.Messaging.Managed.dll" })
-            if (!File.Exists(Path.Combine(path, file))) throw new CliException("library_not_found", "Required library not found: " + Path.Combine(path, file));
-        string version = FileVersionInfo.GetVersionInfo(Path.Combine(path, "YourPhone.Messaging.Managed.dll")).FileVersion ?? "unknown";
+        if (overridePath != null) return Validate(Path.GetFullPath(overridePath), "explicit library path (unverified)", exists, fileVersion);
+        var candidates = new List<(LibraryLocation Location, Version PackageVersion, bool NativeArchitecture)>();
+        foreach (var package in packages.FindForCurrentUser(Family))
+        {
+            // Full package identity is name_version_architecture_resourceId_publisherId.
+            // Do not load resource/bundle packages or another CPU architecture.
+            string[] identity = package.FullName.Split('_');
+            if (identity.Length != 5 || !string.Equals(identity[0] + "_" + identity[4], Family, StringComparison.OrdinalIgnoreCase) ||
+                identity[3].Length != 0 || !Version.TryParse(identity[1], out var version)) continue;
+            string cpu = identity[2].ToLowerInvariant();
+            if (cpu != architecture && cpu != "neutral") continue;
+            if (string.IsNullOrWhiteSpace(package.Directory) || !Path.IsPathFullyQualified(package.Directory)) continue;
+            try
+            {
+                string directory = Path.GetFullPath(package.Directory);
+                if (!RequiredFiles.All(file => exists(Path.Combine(directory, file)))) continue;
+                var location = Validate(directory, "Windows package registration: " + package.PathSource, exists, fileVersion) with {
+                    PackageFullName = package.FullName, PackageVersion = version.ToString(), Architecture = cpu
+                };
+                candidates.Add((location, version, cpu == architecture));
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException || error is CliException { Code: "library_not_found" })
+            {
+                // A Store update can remove a candidate between enumeration and
+                // inspection. An incomplete candidate must not hide another valid one.
+            }
+        }
+        return candidates.OrderByDescending(c => c.PackageVersion).ThenByDescending(c => c.NativeArchitecture)
+            .ThenBy(c => c.Location.PackageFullName, StringComparer.Ordinal).Select(c => c.Location).FirstOrDefault()
+            ?? throw new CliException("phone_link_not_installed", "No current-user registered Phone Link main package for this architecture contains the required managed libraries. A Store update may be in progress. No filesystem search or other-user fallback is performed.");
+    }
+
+    private static readonly string[] RequiredFiles = ["YourPhone.AppCore.Managed.dll", "YourPhone.Messaging.Managed.dll"];
+    private static LibraryLocation Validate(string path, string discovery, Func<string, bool> exists, Func<string, string?> fileVersion)
+    {
+        foreach (string file in RequiredFiles)
+            if (!exists(Path.Combine(path, file))) throw new CliException("library_not_found", "Required library not found: " + Path.Combine(path, file));
+        string version = fileVersion(Path.Combine(path, "YourPhone.Messaging.Managed.dll")) ?? "unknown";
         return new LibraryLocation(path, version, discovery);
     }
-
-    private static List<string> PackageNames()
-    {
-        uint count = 0, length = 0;
-        int result = GetPackagesByPackageFamily(Family, ref count, 0, ref length, 0);
-        if (result == 0 && count == 0) return [];
-        for (int attempt = 0; attempt < 3 && result == 122; attempt++)
-        {
-            nint names = Marshal.AllocHGlobal(checked((int)count * nint.Size));
-            nint buffer = Marshal.AllocHGlobal(checked((int)length * sizeof(char)));
-            try
-            {
-                result = GetPackagesByPackageFamily(Family, ref count, names, ref length, buffer);
-                if (result == 0)
-                {
-                    var output = new List<string>();
-                    for (int i = 0; i < count; i++) output.Add(Marshal.PtrToStringUni(Marshal.ReadIntPtr(names, i * nint.Size))!);
-                    return output;
-                }
-            }
-            finally { Marshal.FreeHGlobal(names); Marshal.FreeHGlobal(buffer); }
-        }
-        throw new CliException("package_discovery_failed", "Windows package enumeration failed (Win32 " + result + ").");
-    }
-
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
-    private static extern int GetPackagesByPackageFamily(string family, ref uint count, nint names, ref uint bufferLength, nint buffer);
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
-    private static extern int GetPackagePathByFullName(string name, ref uint length, nint path);
 }
 
 internal sealed record DeviceProfile(string Id, string DatabaseDirectory)

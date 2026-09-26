@@ -107,7 +107,8 @@ internal sealed class LibraryCatalog
             catch (CliException error) { capabilities.Add(new { kind = spec.Kind, error = error.Code }); }
         }
         return new { directory = Location.Directory, version = Location.Version, discovery = Location.Discovery,
-            connection_contract = connectionInterface.FullName, statement_contract = statementInterface.FullName, capabilities };
+            package_full_name = Location.PackageFullName, package_version = Location.PackageVersion, architecture = Location.Architecture,
+            signature_verified_by_cli = false, connection_contract = connectionInterface.FullName, statement_contract = statementInterface.FullName, capabilities };
     }
 
     private static T Guard<T>(string operation, Func<T> action)
@@ -138,15 +139,14 @@ internal sealed class LibraryCatalog
         protected override Assembly? Load(AssemblyName name)
         {
             if (name.Name == host.GetName().Name) return host;
-            if (name.Name == null || framework.Contains(name.Name)) return null;
+            if (name.Name != null && framework.Contains(name.Name)) return null;
+            if (string.IsNullOrWhiteSpace(name.Name) || name.Name is "." or ".." ||
+                Path.GetFileName(name.Name) != name.Name || name.Name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+                throw new FileNotFoundException("Invalid vendor dependency name.");
             string path = Path.Combine(directory, name.Name + ".dll");
-            return File.Exists(path) ? LoadFromAssemblyPath(path) : null;
+            if (!File.Exists(path)) throw new FileNotFoundException("Vendor dependency not found in the selected package.", name.Name);
+            return LoadFromAssemblyPath(path);
         }
-        protected override nint LoadUnmanagedDll(string name)
-        {
-            if (Path.GetFileName(name) != name) return 0;
-            string path = Path.Combine(directory, name.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) ? name : name + ".dll");
-            return File.Exists(path) ? LoadUnmanagedDllFromPath(path) : 0;
-        }
+        protected override nint LoadUnmanagedDll(string name) => NativeDependencyLoader.Load(directory, name);
     }
 }

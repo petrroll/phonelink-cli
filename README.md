@@ -14,6 +14,13 @@ libraries, without UI automation.
 read Phone Link's **local cache**. This tool cannot fetch uncached history, force
 synchronization, send/reply, dismiss notifications, or mark messages read.
 
+> **Security: read-only does not mean harmless or confidential.** Successful reads
+> expose private messages and potentially SMS login/verification codes as plaintext
+> JSON. A process with your Windows account's access to the synced cache may read
+> it without another phone unlock or approval prompt. Treat this CLI, its loaded
+> libraries, and every consumer of its output as having access to that data.
+> See [Security implications](#security-implications) and [SECURITY.md](SECURITY.md).
+
 ## Requirements
 
 - Windows x64 and the **.NET 10 runtime** ([download](https://dotnet.microsoft.com/download/dotnet/10.0)).
@@ -25,12 +32,41 @@ No administrator rights or additional phone app is required. Run as the same
 Windows user who owns the Phone Link pairing. iPhone cache behavior is **not
 validated**; the tested cache schemas are Android-style.
 
+## Automatic installation discovery (including other drives)
+
+There is **no hard-coded `C:\Program Files\WindowsApps` path** and no directory
+scan for a plausible-looking DLL. On every run that needs libraries, the CLI:
+
+1. Calls `GetPackagesByPackageFamily` for the current Windows user's registered
+   `Microsoft.YourPhone_8wekyb3d8bbwe` packages.
+2. Asks `GetPackagePathByFullName2(PackagePathType_Effective)` for the actual
+   directory. Windows resolves the package's effective external/mutable/install
+   location, including relocated app volumes such as `D:\WindowsApps`. If that
+   API is absent on an older build, it uses `GetPackagePathByFullName`.
+3. Skips resource/bundle packages, incompatible CPU architectures, and candidates
+   missing the required libraries. Among complete matching/neutral main packages,
+   it chooses the newest **registered package version**. Buffer-size races and
+   disappearing/inaccessible candidates during Store updates are handled without
+   falling back to unrelated directories.
+
+The **cache path is separate**: it uses Windows' `LocalApplicationData` known
+folder for the current user plus the Phone Link package family, not the install
+volume or a hard-coded `C:\Users` path. `doctor --pretty` shows the resolved DLL
+path, package identity/version/architecture, discovery API, and cache locations.
+
+Moving a compatible installation to another volume should not require
+`--library-path`. A successful path lookup is not a promise of compatibility with
+all Windows/Phone Link versions or architectures; the requirements above still
+apply. An absent/unusable registration fails explicitly—there is no search of
+other users' installations, the working directory, or `PATH`.
+
 ## Quick start
 
 Build from source below, or use the `phonelink-win-x64` ZIP produced by the
-repository's Windows CI/release. The ZIP contains our executable, README, and MIT
-license—not Microsoft Phone Link DLLs. The framework-dependent `.exe` needs the
-.NET 10 runtime but does not need an SDK or PowerShell to run.
+repository's Windows CI/release. The ZIP contains our executable, README,
+security notes, and MIT license—not Microsoft Phone Link DLLs. The
+framework-dependent `.exe` needs the .NET 10 runtime but does not need an SDK or
+PowerShell to run.
 
 In Windows PowerShell, from the executable's directory:
 
@@ -137,8 +173,10 @@ old timestamps, rows may disappear, and retention/limits can omit data.
 
 ## How it works / safety boundaries
 
-1. Windows package APIs locate the current user's registered Phone Link package.
-2. An isolated assembly load context loads its installed managed libraries.
+1. Windows package APIs locate the current user's effective Phone Link directory,
+   independent of its drive or parent-folder name (see discovery above).
+2. A separate assembly load context loads its installed managed libraries.
+   This isolates dependency resolution, **not permissions or code execution**.
 3. The CLI instantiates **table classes**, supplying its own read-only implementations
    of the private `ISqliteConnection` / `ISqliteStatement` interfaces.
 4. Table/key metadata comes from the library. The adapter enumerates integer keys
@@ -163,12 +201,22 @@ DB/device, not globally synchronized across every phone.
 `--cache-root` points to a `LocalCache\Indexed` directory containing
 `<device-id>\System\Database\*.db`. Do not pass a single DB file or an inconsistent
 copy that omits its active WAL. Do not use `immutable=1` or Linux SQLite against
-the live Windows cache.
+the live Windows cache. When invoking the Windows `.exe` from WSL, explicit path
+overrides must be **Windows paths** (use `wslpath -w` to convert a WSL path).
 
-**Only load trusted libraries.** `--library-path` exists for diagnostics/testing;
-loading a .NET DLL can execute module initializers. The read-only adapter is not
-a sandbox for malicious DLLs. The default uses the locally registered Microsoft
-installation. No Microsoft binaries or decompiled implementations are distributed.
+**Only load trusted libraries.** `--library-path` overrides automatic discovery
+and is equivalent to choosing code to execute, not just a data folder. This
+includes `doctor`, which loads libraries even though it does not print messages.
+The default path comes from Windows registration, but the CLI does **not** perform
+an independent Authenticode/signature/hash verification of the package DLLs;
+`doctor` reports this explicitly. No Microsoft binaries or decompiled
+implementations are distributed.
+
+Our resolver takes non-framework managed dependencies only from the selected
+package directory. Direct native dependency resolution is restricted to that
+directory or Windows System32, with no working-directory/`PATH` fallback. These
+are search-path safeguards, not a sandbox or complete defense against tampered
+libraries, already-loaded code, or native libraries' own loading behavior.
 
 WhatsApp/Signal notification previews are not access to those apps' full chat
 archives. RCS and attachment availability are limited to what Phone Link cached.
@@ -208,17 +256,49 @@ The regression suite uses **original synthetic vendor test doubles** and tempora
 Windows SQLite databases—not Microsoft's DLLs or your Phone Link data. It checks
 SMS/MMS/RCS, notification payloads, >5000 rows and timestamp ties, 64-bit IDs,
 Unicode/NULs, filtering, stale profiles, live WAL-only commits, locking, read-only
-files, blocked writes, redacted failures, and unchanged DB hashes. Windows CI
-runs the same tests. Local live validation additionally compared SMS/MMS text to
-the synced caches without printing or saving message content. Nonempty RCS
+files, blocked writes, redacted failures, and unchanged DB hashes. Discovery tests
+simulate alternate-drive, Unicode, and Windows-returned UNC locations; redirected
+user folders; resource/architecture selection; and installation-update races.
+Native-loader tests reject working-directory/`PATH` fallback. These simulations
+do not claim that Phone Link itself supports every possible deployment layout.
+Windows CI runs the same tests. Local live validation additionally compared
+SMS/MMS text to the synced caches without printing or saving message content. Nonempty RCS
 messages were tested synthetically, not on the linked phones.
 
-## Privacy and license
+## Security implications
 
-Output may contain phone numbers, private messages, and one-time codes. Do not
-commit exports, send them to remote logs, or wrap the CLI in an unauthenticated
-server. When reporting bugs, share versions and sanitized error codes—not real
-DBs, message payloads, or unsanitized `doctor` paths/profile IDs.
+- **Synced phone data is also PC data.** Where your Windows account can read the
+  cache, processes running with that access may read cached messages/OTPs. The CLI
+  does not add a new consent/password/device-lock check. Closing Phone Link,
+  locking/disconnecting the phone, or deleting an old pairing is not a guarantee
+  that previously synced data or exports have disappeared. Encryption/ACLs and
+  cache behavior vary by build; this CLI does not bypass them or decrypt caches.
+- **SMS/notification MFA codes can be exposed.** Linking a phone can put those
+  codes on the PC too. Do not treat a synced SMS code as an independent factor
+  against a compromised Windows session. For sensitive accounts, prefer
+  phishing-resistant authentication such as passkeys/security keys where available.
+- **Least privilege and trusted code matter.** Do not run elevated. Avoid untrusted,
+  shared, or writable-by-others library folders. Loaded DLLs execute with the CLI's
+  Windows privileges and can perform their own file/network/process operations
+  outside our read-only adapter. Read-only SQL protects against writes through
+  that adapter, not malicious code or disclosure.
+- **Outputs and consumers are sensitive.** Terminal scrollback, redirected files,
+  backups, clipboard contents, CI/agent logs, and crash dumps can retain plaintext.
+  Do not commit exports or send them to remote services without deliberate consent.
+  Device filters and `--limit` are not access-control boundaries or memory-erasure
+  guarantees. `--all-devices` can expose stale profiles; `--include-payload` includes
+  more private fields. Even `doctor` paths/IDs can identify a user or device.
+- **Message content is untrusted input.** The CLI does not execute it. Shells,
+  renderers, and AI agents consuming the JSON must not treat messages, links, or
+  notification action fields as commands/instructions. Beware prompt injection
+  and require approval before downstream actions.
+- **Do not expose an unauthenticated wrapper.** There is no server in this project.
+  Any HTTP/MCP/IPC wrapper needs its own authentication, authorization, data
+  minimization, and logging controls; binding to localhost alone is not sufficient.
+
+See [SECURITY.md](SECURITY.md) for the threat model, limitations, and safe reporting.
+
+## License
 
 This repository's original code is licensed under **[MIT](LICENSE)**, provided
 **AS IS**, with no warranty. That license does not relicense Microsoft Phone Link,
