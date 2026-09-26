@@ -56,8 +56,21 @@ public abstract class Table(ISqliteConnection connection, string name, string ke
     protected virtual string Projection => "*";
     protected abstract object Map(ISqliteStatement row);
 
+    private static int readBarrierUsed;
+    private static void PauseAtReadBarrier()
+    {
+        // Test-only synchronization, never present in the real vendor DLLs or
+        // production CLI. The key query has already established the snapshot.
+        string? directory = Environment.GetEnvironmentVariable("FIXTURE_READ_BARRIER");
+        if (directory == null || Interlocked.Exchange(ref readBarrierUsed, 1) != 0) return;
+        File.WriteAllText(Path.Combine(directory, "reader-ready"), "synthetic test marker");
+        if (!SpinWait.SpinUntil(() => File.Exists(Path.Combine(directory, "reader-continue")), TimeSpan.FromSeconds(15)))
+            throw new TimeoutException("Synthetic reader barrier timed out.");
+    }
+
     public IReadOnlyList<object> GetEntitiesFromIds(IReadOnlyList<long> ids)
     {
+        PauseAtReadBarrier();
         if (Environment.GetEnvironmentVariable("FIXTURE_ATTEMPT_WRITE") == "1")
         {
             using var forbidden = Connection.CreateStatement("DELETE FROM message");

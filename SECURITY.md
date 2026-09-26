@@ -53,6 +53,27 @@ They do not:
 - turn command filters, result limits, or library load contexts into security
   boundaries. Libraries may read more rows into memory than the CLI emits.
 
+## Concurrency and availability
+
+Read-only access still acquires database/file locks. In normal WAL mode, readers
+can coexist with commits and retain a consistent snapshot, but a long-lived
+reader can delay checkpoints/truncation and increase retained WAL size. In
+rollback-journal mode, reader locks can delay a writer's commit. Exclusive file
+access, migrations, or replacing a database can conflict with open reader handles.
+There is no guarantee of zero interference with Phone Link.
+
+The SQLite busy timeout is 3 seconds **per operation**, not an overall execution
+deadline, and not every failure invokes it. The CLI holds a read transaction for
+that database's processing; output filters/limits are not lock-duration limits.
+Large repeated queries or aggressive polling can consume resources and affect
+availability even without modifying records. Retry transient lock errors with
+backoff; do not bypass locking or remove WAL/SHM files.
+
+Regression tests cover a real commit during an active CLI WAL snapshot (including
+key pagination and MMS header/part consistency), exclusive-lock failure, and a
+rollback-mode writer being delayed until its reader closes. These tests are not
+a guarantee about future vendor migrations or every filesystem/locking product.
+
 ## Installation/dependency trust
 
 Automatic discovery uses current-user Windows AppModel package registration and

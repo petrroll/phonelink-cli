@@ -198,6 +198,36 @@ control is used. SQLite can still use shared-memory/lock bookkeeping; read-only
 means no modification of cached message/notification records. Snapshots are per
 DB/device, not globally synchronized across every phone.
 
+### Concurrent access: read-only is not lock-free
+
+For a cache in **WAL mode**, normal writes can commit while the CLI reads. The
+CLI sees one consistent snapshot per database, including committed WAL content;
+changes committed after its snapshot started appear on the **next invocation**.
+It uses Windows SQLite's ordinary cross-process locks, not a bypass or bare file
+copy. A synchronized integration test holds a CLI snapshot open while a Windows
+writer commits updates, inserts/deletes, and an MMS part change, and verifies
+that no mixed-generation result is returned.
+
+Contention and interference are still possible:
+
+- SQLite's busy timeout allows **up to 3 seconds per contended operation**, not
+  a 3-second deadline for the whole command. Some errors fail immediately. An
+  exclusive transaction/file lock, database replacement, or schema/encryption
+  migration can make the command fail. It emits a JSON error (usually
+  `sqlite_error`/exit 1), not partial success output, and releases its handles.
+- Long WAL readers can delay checkpoints/truncation and retain a larger WAL.
+  In rollback-journal mode, a reader can also delay a writer's commit. The tests
+  explicitly demonstrate that behavior; read-only is **not** a zero-impact promise.
+- The read transaction lasts through that database's queries and MMS enrichment.
+  `--limit` bounds returned/retained results, **not** scan time or lock lifetime;
+  large caches can therefore keep a snapshot open longer.
+
+Avoid tight polling loops and retry transient contention with a short backoff.
+Do not disable locks, delete WAL/SHM files, or kill Phone Link to work around a
+busy error. Normal SQLite concurrency is supported; this does not guarantee
+that every private Phone Link migration or future version tolerates an external
+reader without delay.
+
 `--cache-root` points to a `LocalCache\Indexed` directory containing
 `<device-id>\System\Database\*.db`. Do not pass a single DB file or an inconsistent
 copy that omits its active WAL. Do not use `immutable=1` or Linux SQLite against
@@ -256,7 +286,8 @@ The regression suite uses **original synthetic vendor test doubles** and tempora
 Windows SQLite databases—not Microsoft's DLLs or your Phone Link data. It checks
 SMS/MMS/RCS, notification payloads, >5000 rows and timestamp ties, 64-bit IDs,
 Unicode/NULs, filtering, stale profiles, live WAL-only commits, locking, read-only
-files, blocked writes, redacted failures, and unchanged DB hashes. Discovery tests
+files, synchronized reader/writer commits, rollback-journal contention, blocked
+writes, redacted failures, and unchanged DB hashes. Discovery tests
 simulate alternate-drive, Unicode, and Windows-returned UNC locations; redirected
 user folders; resource/architecture selection; and installation-update races.
 Native-loader tests reject working-directory/`PATH` fallback. These simulations

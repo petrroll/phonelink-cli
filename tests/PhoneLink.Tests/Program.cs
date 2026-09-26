@@ -243,6 +243,7 @@ internal static partial class Suite
             });
             NativeTests(phone);
             DiscoveryTests();
+            ConcurrencyTests();
         }
         catch (Exception error) { failed++; Console.Error.WriteLine("SETUP FAILURE " + error); }
         finally { if (Directory.Exists(temporary)) Directory.Delete(temporary, true); }

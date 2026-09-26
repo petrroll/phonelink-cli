@@ -64,6 +64,11 @@ internal static class Fixture
     }
 }
 
+internal sealed class FixtureSqliteException(int code, string? detail) : Exception($"Fixture SQL failed: {code}: {detail}")
+{
+    public int Code { get; } = code;
+}
+
 // WRITE-CAPABLE CODE EXISTS ONLY IN THE SYNTHETIC TEST HARNESS, not the CLI.
 internal sealed class Writer : IDisposable
 {
@@ -76,7 +81,7 @@ internal sealed class Writer : IDisposable
     public void Exec(string sql)
     {
         int result = sqlite3_exec(handle, Encoding.UTF8.GetBytes(sql + '\0'), 0, 0, out var error);
-        try { if (result != 0) throw new Exception("Fixture SQL failed: " + result + ": " + Marshal.PtrToStringUTF8(error)); }
+        try { if (result != 0) throw new FixtureSqliteException(result, Marshal.PtrToStringUTF8(error)); }
         finally { if (error != 0) sqlite3_free(error); }
     }
     public void Dispose() { if (handle != 0) { sqlite3_close_v2(handle); handle = 0; } }
