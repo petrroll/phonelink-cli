@@ -45,7 +45,6 @@ internal static class Discovery
             try
             {
                 string directory = Path.GetFullPath(package.Directory);
-                if (!RequiredFiles.All(file => exists(Path.Combine(directory, file)))) continue;
                 var location = Validate(directory, "Windows package registration: " + package.PathSource, exists, fileVersion) with {
                     PackageFullName = package.FullName, PackageVersion = version.ToString(), Architecture = cpu
                 };
@@ -101,21 +100,28 @@ internal sealed record DeviceProfile(string Id, string DatabaseDirectory)
         return profiles;
     }
 
-    public static List<DeviceProfile> Select(List<DeviceProfile> profiles, Options options)
+    public static List<DeviceProfile> Select(List<DeviceProfile> profiles, Options options, string database)
     {
         if (profiles.Count == 0) throw new CliException("no_devices", "No cached device profiles found. Let Phone Link sync a paired phone first.");
-        if (options.AllDevices) return profiles;
-        if (options.Device == null)
+        if (options.Device != null)
         {
-            if (profiles.Count == 1) return profiles;
+            var exact = profiles.Where(p => p.Id.Equals(options.Device, StringComparison.OrdinalIgnoreCase)).ToList();
+            var matches = exact.Count == 1 ? exact : profiles.Where(p => p.Id.StartsWith(options.Device, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (matches.Count == 0) throw new CliException("device_not_found", "No cached device matches that ID. Run 'devices'.");
+            if (matches.Count == 1)
+            {
+                if (!File.Exists(matches[0].Database(database)))
+                    throw new CliException("database_not_found", "The selected profile has no " + database + ".db cache.");
+                return matches;
+            }
         }
         else
         {
-            var exact = profiles.Where(p => p.Id.Equals(options.Device, StringComparison.OrdinalIgnoreCase)).ToList();
-            if (exact.Count == 1) return exact;
-            var matches = profiles.Where(p => p.Id.StartsWith(options.Device, StringComparison.OrdinalIgnoreCase)).ToList();
-            if (matches.Count == 1) return matches;
-            if (matches.Count == 0) throw new CliException("device_not_found", "No cached device matches that ID. Run 'devices'.");
+            // A notifications-only profile cannot answer a messages command (and
+            // vice versa). Explicit selection above still reports a missing DB.
+            var eligible = profiles.Where(p => File.Exists(p.Database(database))).ToList();
+            if (eligible.Count == 0) throw new CliException("database_not_found", "No cached profile contains " + database + ".db.");
+            if (options.AllDevices || eligible.Count == 1) return eligible;
         }
         throw new CliException("ambiguous_device", "Multiple cached profiles match. Use --device ID (a unique prefix is OK) or --all-devices. Old pairings can leave stale profiles.");
     }

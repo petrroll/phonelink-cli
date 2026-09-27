@@ -12,7 +12,10 @@ public class ReadOnlyConnectionAdapter : DispatchProxy
     internal ReadOnlyDatabase Database { get; set; } = null!;
     internal Type StatementType { get; set; } = null!;
 
-    protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
+    protected override object? Invoke(MethodInfo? targetMethod, object?[]? args) =>
+        Database.Observe(() => InvokeCore(targetMethod, args));
+
+    private object? InvokeCore(MethodInfo? targetMethod, object?[]? args)
     {
         string method = targetMethod?.Name ?? throw CliException.Contract("Missing connection method.");
         switch (method)
@@ -33,7 +36,10 @@ public class ReadOnlyStatementAdapter : DispatchProxy
 {
     internal ReadOnlyDatabase.Statement Statement { get; set; } = null!;
 
-    protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
+    protected override object? Invoke(MethodInfo? targetMethod, object?[]? args) =>
+        Statement.Owner.Observe(() => InvokeCore(targetMethod, args));
+
+    private object? InvokeCore(MethodInfo? targetMethod, object?[]? args)
     {
         string method = targetMethod?.Name ?? throw CliException.Contract("Missing statement method.");
         args ??= [];
@@ -81,7 +87,9 @@ public class ReadOnlyStatementAdapter : DispatchProxy
             if (length == null || Convert.ToInt64(length, CultureInfo.InvariantCulture) == 0) return null;
             // The vendor entities hold lazy blob references. Keep this fact but
             // never open them, copy binary bytes, or run a vendor DB constructor.
-            return Create(method.ReturnType, typeof(MetadataOnlyBlob));
+            var reference = (MetadataOnlyBlob)Create(method.ReturnType, typeof(MetadataOnlyBlob));
+            reference.Database = Statement.Owner;
+            return reference;
         }
         if (Statement.HasColumn(name) && Statement.Get(name) is null or ReadOnlyDatabase.BlobInfo { Length: 0 }) return null;
         throw new CliException("binary_not_supported", "Binary attachment extraction is not implemented.");
@@ -90,6 +98,7 @@ public class ReadOnlyStatementAdapter : DispatchProxy
 
 public class MetadataOnlyBlob : DispatchProxy
 {
+    internal ReadOnlyDatabase Database { get; set; } = null!;
     protected override object? Invoke(MethodInfo? targetMethod, object?[]? args) =>
-        throw new CliException("binary_not_supported", "The CLI exposes attachment metadata, not attachment streams.");
+        Database.Observe<object?>(() => throw new CliException("binary_not_supported", "The CLI exposes attachment metadata, not attachment streams."));
 }

@@ -1,5 +1,4 @@
 using System.Runtime.InteropServices;
-using System.Text;
 using System.Text.Json;
 using PhoneLink.Libraries;
 
@@ -7,12 +6,11 @@ namespace PhoneLink;
 
 internal static class Program
 {
-    internal const string Version = "0.1.1";
+    internal static string Version { get; } = typeof(Program).Assembly.GetName().Version!.ToString(3);
     internal const string Backend = "phonelink-managed-libraries";
 
     public static int Main(string[] args)
     {
-        Console.OutputEncoding = new UTF8Encoding(false);
         try
         {
             Options options = Options.Parse(args);
@@ -39,7 +37,8 @@ internal static class Program
                 }, options);
                 return 0;
             }
-            var selected = DeviceProfile.Select(DeviceProfile.Discover(options.CacheRoot), options);
+            string database = options.Command == "notifications" ? "notifications" : "phone";
+            var selected = DeviceProfile.Select(DeviceProfile.Discover(options.CacheRoot), options, database);
             var reader = new LibraryReader(catalog);
             var newest = new NewestRows(options.Limit);
             foreach (var device in selected)
@@ -70,8 +69,8 @@ internal static class Program
         return exitCode;
     }
 
-    private const string Help = """
-        Phone Link CLI 0.1.1 — library-backed, Windows x64, read-only
+    private static string Help => $$"""
+        Phone Link CLI {{Version}} - library-backed, Windows x64, read-only
         AI / Astra generated. Uses NON-PUBLIC APIs and is likely to break.
 
         Usage:
@@ -88,9 +87,10 @@ internal static class Program
         Shared options: --pretty, --cache-root PATH, --library-path TRUSTED_DIRECTORY
         --cache-root is the LocalCache\Indexed directory, not a database file.
         Only use --library-path with trusted code: loading a DLL executes code.
-        --device accepts a unique profile-ID prefix; stale pairings are included
-        only when explicitly selected or when --all-devices is used.
-        --limit is global, defaults to 50, and accepts 1–10000. Newest first.
+        --device accepts a unique profile-ID prefix. A sole eligible cached profile
+        is auto-selected, even if stale; multiple profiles require explicit selection.
+        --all-devices reads profiles containing the command's database.
+        --limit is global, defaults to 50, and accepts 1-10000. Newest first.
         --since is inclusive and requires a timezone, e.g. 2026-09-01T00:00:00Z.
         Message kinds: sms, mms, rcs_chat, rcs_filetransfer.
         --app matches an exact Android package name.

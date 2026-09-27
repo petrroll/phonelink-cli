@@ -67,14 +67,19 @@ internal sealed class LibraryReader(LibraryCatalog catalog)
         });
     }
 
-    private IEnumerable<object> All(object table, ReadOnlyDatabase database)
+    private IEnumerable<object> All(TableSpec spec, ReadOnlyDatabase database, bool required = true)
     {
+        object table = catalog.CreateTable(spec, database);
         var (name, key) = catalog.TableNames(table);
-        if (!database.HasTable(name)) throw new CliException("unsupported_schema", "A library-required table is absent: " + name);
-        // A generic, key-only cursor avoids QueryActivitySince's fixed 5000-row
-        // cap and timestamp-tie loss. Content SELECTs/mapping come from the library.
+        if (!database.HasTable(name))
+        {
+            if (required) throw new CliException("unsupported_schema", "A library-required table is absent: " + name);
+            yield break;
+        }
+        // One bounded path for all filters: no private per-thread bulk reader
+        // or QueryActivitySince cap. Content SELECTs/mapping stay in the library.
         foreach (long[] ids in database.KeyBatches(name, key))
-            foreach (object entity in catalog.CallRows(table, "GetEntitiesFromIds", ids)) yield return entity;
+            foreach (object entity in catalog.CallRows(table, database, "GetEntitiesFromIds", ids)) yield return entity;
     }
 
     public IReadOnlyList<OutputRow> Messages(DeviceProfile device, Options options)
@@ -83,15 +88,7 @@ internal sealed class LibraryReader(LibraryCatalog catalog)
         var newest = new NewestRows(options.Limit);
         foreach (var spec in TableSpec.Messages.Where(s => options.Kind == null || options.Kind == s.Kind))
         {
-            object table = catalog.CreateTable(spec, database);
-            string tableName = catalog.TableNames(table).Table;
-            if (!database.HasTable(tableName))
-            {
-                if (spec.Kind == "sms" || options.Kind != null) throw new CliException("unsupported_schema", "Required message table is absent: " + tableName);
-                continue;
-            }
-            IEnumerable<object> entities = options.Thread.HasValue ? catalog.CallRows(table, "GetMessagesInThread", options.Thread.Value) : All(table, database);
-            foreach (object entity in entities)
+            foreach (object entity in All(spec, database, required: spec.Kind == "sms" || options.Kind != null))
             {
                 var row = Identity(entity, device, spec.Kind, "Timestamp");
                 if (options.Since.HasValue && row.Ticks < options.Since.Value.UtcTicks) continue;
@@ -122,7 +119,7 @@ internal sealed class LibraryReader(LibraryCatalog catalog)
         foreach (var row in newest.Items.Where(r => r.Kind == "mms"))
         {
             partsTable ??= catalog.CreateTable(TableSpec.MmsParts, database);
-            var entities = catalog.CallRows(partsTable, "GetPartsForMessage", row.Id)
+            var entities = catalog.CallRows(partsTable, database, "GetPartsForMessage", row.Id)
                 .OrderBy(p => Number(p, "SequenceNumber", false)).ThenBy(p => Number(p, "Id")).ToArray();
             var parts = entities.Select(p => new Dictionary<string, object?> {
                 { "id", Id(Number(p, "Id")) }, { "sequence", Number(p, "SequenceNumber", false) },
@@ -134,6 +131,7 @@ internal sealed class LibraryReader(LibraryCatalog catalog)
             var texts = parts.Where(p => (string?)p["content_type"] == "text/plain" && p["text"] is string).Select(p => (string)p["text"]!).ToArray();
             row.Data["body"] = texts.Length == 0 ? null : string.Join("\n", texts);
         }
+        database.ThrowIfFaulted();
         return newest.Items;
     }
 
@@ -143,9 +141,7 @@ internal sealed class LibraryReader(LibraryCatalog catalog)
         var newest = new NewestRows(options.Limit);
         foreach (var spec in TableSpec.Conversations)
         {
-            object table = catalog.CreateTable(spec, database);
-            if (spec.Kind == "rcs" && !database.HasTable(catalog.TableNames(table).Table)) continue;
-            foreach (object entity in All(table, database))
+            foreach (object entity in All(spec, database, required: spec.Kind != "rcs"))
             {
                 var row = Identity(entity, device, spec.Kind, "LatestTimestamp");
                 if (options.Since.HasValue && row.Ticks < options.Since.Value.UtcTicks) continue;
@@ -160,15 +156,15 @@ internal sealed class LibraryReader(LibraryCatalog catalog)
                 newest.Add(row);
             }
         }
+        database.ThrowIfFaulted();
         return newest.Items;
     }
 
     public IReadOnlyList<OutputRow> Notifications(DeviceProfile device, Options options)
     {
         using var database = new ReadOnlyDatabase(device.Database("notifications"));
-        object table = catalog.CreateTable(TableSpec.Notifications, database);
         var newest = new NewestRows(options.Limit);
-        foreach (object entity in All(table, database))
+        foreach (object entity in All(TableSpec.Notifications, database))
         {
             var row = Identity(entity, device, "notification", "PostTime");
             if (options.Since.HasValue && row.Ticks < options.Since.Value.UtcTicks) continue;
@@ -188,6 +184,7 @@ internal sealed class LibraryReader(LibraryCatalog catalog)
             }
             newest.Add(row);
         }
+        database.ThrowIfFaulted();
         return newest.Items;
     }
 }

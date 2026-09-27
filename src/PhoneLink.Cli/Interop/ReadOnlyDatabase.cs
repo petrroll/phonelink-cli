@@ -11,7 +11,22 @@ internal sealed class ReadOnlyDatabase : IDisposable
 {
     private nint handle;
     private readonly HashSet<Statement> statements = [];
+    private CliException? fault;
     public string Path { get; }
+
+    // Some vendor versions may catch adapter exceptions. Preserve the first
+    // boundary failure so a caught error cannot become a false empty success.
+    internal T Observe<T>(Func<T> operation)
+    {
+        try { return operation(); }
+        catch (Exception error)
+        {
+            var failure = error as CliException ?? CliException.Contract("Read-adapter operation failed (" + error.GetType().Name + ").");
+            fault ??= failure;
+            throw failure;
+        }
+    }
+    internal void ThrowIfFaulted() { if (fault != null) throw fault; }
 
     public ReadOnlyDatabase(string path)
     {
@@ -25,20 +40,22 @@ internal sealed class ReadOnlyDatabase : IDisposable
                 throw new CliException("not_read_only", "Refusing a writable database connection.");
             Check(Native.sqlite3_busy_timeout(handle, 3000));
             // Keep one consistent snapshot while reading related headers/parts.
-            using var begin = Prepare("BEGIN");
+            using var begin = Prepare("BEGIN", allowBegin: true);
             _ = begin.Step();
         }
         catch { Dispose(); throw; }
     }
 
-    public Statement Prepare(string sql)
+    public Statement Prepare(string sql) => Prepare(sql, allowBegin: false);
+
+    private Statement Prepare(string sql, bool allowBegin)
     {
         ObjectDisposedException.ThrowIf(handle == 0, this);
         // SQLite labels ATTACH (which may create a file) and some PRAGMAs as
         // read-only. Permit only query forms plus our own deferred BEGIN.
         string start = sql.TrimStart();
         bool query = System.Text.RegularExpressions.Regex.IsMatch(start, @"\A(?:SELECT|WITH)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-        if (!query && !start.TrimEnd().Equals("BEGIN", StringComparison.OrdinalIgnoreCase))
+        if (!query && !(allowBegin && start.TrimEnd().Equals("BEGIN", StringComparison.OrdinalIgnoreCase)))
             throw new CliException("not_read_only", "Only read-only SELECT/WITH queries are allowed.");
         var statement = new Statement(this, sql);
         statements.Add(statement);
@@ -80,8 +97,16 @@ internal sealed class ReadOnlyDatabase : IDisposable
     private void Check(int code)
     {
         if (code == 0) return;
-        string message = handle == 0 ? "Could not open database" : Marshal.PtrToStringUTF8(Native.sqlite3_errmsg(handle)) ?? "SQLite error";
-        throw new CliException("sqlite_error", $"{message} (SQLite {code}): {Path}");
+        // sqlite3_errmsg can echo tokens from vendor-generated SQL or schema.
+        // Report status/metadata only, never its potentially private raw text.
+        string detail = (code & 0xff) switch {
+            5 or 6 => "Database is busy or locked; retry with backoff",
+            8 => "Database access was refused as read-only",
+            14 => "Database could not be opened",
+            26 => "Database format is unsupported or is not SQLite",
+            _ => "Database operation failed"
+        };
+        throw new CliException("sqlite_error", $"{detail} (SQLite {code}): {Path}");
     }
     public void Dispose()
     {
@@ -94,6 +119,7 @@ internal sealed class ReadOnlyDatabase : IDisposable
     internal sealed class Statement : IDisposable
     {
         private readonly ReadOnlyDatabase database;
+        internal ReadOnlyDatabase Owner => database;
         private nint handle;
         private bool hasRow;
         private readonly bool[] bound;
@@ -209,7 +235,6 @@ internal sealed class ReadOnlyDatabase : IDisposable
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] internal static extern int sqlite3_close_v2(nint db);
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] internal static extern int sqlite3_db_readonly(nint db, byte[] name);
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] internal static extern int sqlite3_busy_timeout(nint db, int ms);
-        [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] internal static extern nint sqlite3_errmsg(nint db);
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] internal static extern int sqlite3_prepare_v2(nint db, nint sql, int length, out nint statement, out nint tail);
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] internal static extern int sqlite3_stmt_readonly(nint statement);
         [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] internal static extern int sqlite3_bind_parameter_count(nint statement);
@@ -234,6 +259,10 @@ internal sealed class ReadOnlyDatabase : IDisposable
 internal static class WindowsTime
 {
     private static readonly DateTimeOffset Epoch = new(1601, 1, 1, 0, 0, 0, TimeSpan.Zero);
-    public static DateTimeOffset FromFileTime(long value) => Epoch.AddTicks(value);
+    public static DateTimeOffset FromFileTime(long value)
+    {
+        try { return Epoch.AddTicks(value); }
+        catch (ArgumentOutOfRangeException) { throw CliException.Contract("Cached timestamp is outside the representable FILETIME range."); }
+    }
     public static long ToFileTime(DateTimeOffset value) => checked(value.UtcTicks - Epoch.Ticks);
 }

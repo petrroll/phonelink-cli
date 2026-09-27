@@ -40,6 +40,7 @@ internal static partial class Suite
             Test("help, version, and honest provenance", () => {
                 var help = Invoke(["--help"]);
                 Require(help.ExitCode == 0 && help.Out.Contains("AI / Astra") && help.Out.Contains("NON-PUBLIC"), "missing warnings/help");
+                Require(help.Out.All(c => c <= 127) && help.Out.Contains("even if stale"), "help must be ASCII and disclose stale auto-selection");
                 var version = Parse(Invoke(["version"]));
                 Require(version.GetProperty("backend").GetString() == "phonelink-managed-libraries", "wrong backend");
                 Require(version.GetProperty("cached").GetBoolean(), "not disclosing cache source");
@@ -144,6 +145,19 @@ internal static partial class Suite
                 var result = Invoke(["messages", "--cache-root", root, "--library-path", Path.Combine(temporary, "no-libraries")]);
                 Error(result, 1, "library_not_found");
             });
+            Test("mixed database profiles are selected per command", () => {
+                string mixed = Path.Combine(temporary, "mixed-databases");
+                Fixture.Phone(Path.Combine(Fixture.Device(mixed, "phone-only"), "phone.db"));
+                Fixture.Notifications(Path.Combine(Fixture.Device(mixed, "notifications-only"), "notifications.db"));
+                Require(Rows(RunAt(mixed, "devices")).Length == 2, "metadata must list both profiles");
+                Require(Rows(RunAt(mixed, "messages")).Length == 7, "sole eligible phone profile not auto-selected");
+                Require(Rows(RunAt(mixed, "messages", "--all-devices")).Length == 7, "notifications-only profile blocked messages");
+                Require(Rows(RunAt(mixed, "conversations", "--all-devices")).Length == 3, "notifications-only profile blocked conversations");
+                Require(Rows(RunAt(mixed, "notifications")).Length == 2, "sole notification profile not auto-selected");
+                Require(Rows(RunAt(mixed, "notifications", "--all-devices")).Length == 2, "phone-only profile blocked notifications");
+                Error(RunAt(mixed, "messages", "--device", "notifications-only"), 1, "database_not_found");
+                Error(RunAt(mixed, "notifications", "--device", "phone-only"), 1, "database_not_found");
+            });
             Test("read-only file attribute is supported", () => {
                 var original = File.GetAttributes(phone);
                 try { File.SetAttributes(phone, original | FileAttributes.ReadOnly); Require(Rows(Run("messages")).Length == 7, "RO file read failed"); }
@@ -158,6 +172,26 @@ internal static partial class Suite
                 var result = RunEnv(root, new() { ["FIXTURE_THROW_SECRET"] = "1" }, "messages");
                 Error(result, 1, "library_call_failed");
                 Require(!result.Err.Contains("synthetic-private-value"), "vendor error leaked content");
+            });
+            Test("SQLite diagnostic tokens cannot leak through stderr", () => {
+                var result = RunEnv(root, new() { ["FIXTURE_SQL_ERROR"] = "1" }, "messages");
+                Error(result, 1, "sqlite_error");
+                Require(!result.Err.Contains("synthetic-private-sql-token"), "SQLite diagnostic leaked a query token");
+            });
+            Test("vendor-swallowed adapter errors cannot become empty success", () => {
+                foreach (string failure in new[] { "write", "bind", "column" })
+                {
+                    var result = RunEnv(root, new() { ["FIXTURE_SWALLOW_FAILURE"] = failure }, "messages");
+                    Error(result, 1, failure == "write" ? "not_read_only" : "unsupported_library");
+                }
+            });
+            Test("invalid FILETIME has a clear compatibility error", () => {
+                string invalidTime = Path.Combine(temporary, "invalid-time");
+                string path = Path.Combine(Fixture.Device(invalidTime, "one"), "phone.db");
+                Fixture.Phone(path, false);
+                using (var writer = new Writer(path)) writer.Exec($"INSERT INTO message VALUES(1,1,{long.MaxValue},'synthetic',1);");
+                Error(RunAt(invalidTime, "messages"), 1, "unsupported_library");
+                Require(WindowsTime.FromFileTime(-1).Year == 1600, "valid negative FILETIME should remain supported");
             });
             Test("optional absent tables are skipped; explicit absent kind fails", () => {
                 string minimal = Path.Combine(temporary, "minimal");
@@ -187,6 +221,10 @@ internal static partial class Suite
                 Require(rows.Length == 5009, "lost records at fixed library limit or key boundary");
                 Require(rows[0].GetProperty("id").GetString() == long.MaxValue.ToString(), "max key missing");
                 Require(rows[^1].GetProperty("id").GetString() == long.MinValue.ToString(), "min key missing");
+                // The fixture has no bulk thread API and rejects ID batches >256.
+                var threadRows = Rows(RunAt(large, "messages", "--thread", "1", "--limit", "10000"));
+                Require(threadRows.Length == rows.Length, "thread filter bypassed bounded enumeration");
+                Require(Rows(RunAt(large, "messages", "--thread", "1", "--limit", "1")).Length == 1, "large thread limit failed");
             });
             Test("committed WAL-only data visible, base DB not checkpointed", () => {
                 string walRoot = Path.Combine(temporary, "wal");
@@ -209,6 +247,21 @@ internal static partial class Suite
                 Error(RunAt(locked, "messages"), 1, "sqlite_error");
                 writer.Exec("ROLLBACK;");
             });
+            Test("timed-out CLI exits before temporary fixtures are removed", () => {
+                string stalled = Path.Combine(temporary, "stalled-child");
+                Fixture.Phone(Path.Combine(Fixture.Device(stalled, "one"), "phone.db"));
+                string barrier = Path.Combine(stalled, "barrier");
+                Directory.CreateDirectory(barrier);
+                bool timedOut = false;
+                try
+                {
+                    Invoke(["messages", "--library-path", libraries, "--cache-root", stalled],
+                        new() { ["FIXTURE_READ_BARRIER"] = barrier }, timeoutMs: 5000);
+                }
+                catch (TimeoutException) { timedOut = true; }
+                Require(timedOut && File.Exists(Path.Combine(barrier, "reader-ready")), "child did not hold a read snapshot before timeout");
+                Directory.Delete(stalled, true); // fails on Windows if child still holds files
+            });
             Test("malformed notification payload does not leak through errors", () => {
                 string invalid = Path.Combine(temporary, "invalid-json");
                 string path = Path.Combine(Fixture.Device(invalid, "one"), "notifications.db");
@@ -219,17 +272,22 @@ internal static partial class Suite
                 Require(!result.Err.Contains("private-synthetic-not-json"), "bad payload leaked");
             });
             Test("multiple profiles require explicit, unambiguous selection", () => {
-                Fixture.Phone(Path.Combine(Fixture.Device(root, "alpha-backup"), "phone.db"), false);
-                Error(Run("messages"), 1, "ambiguous_device");
-                Error(Run("messages", "--device", "alpha"), 1, "ambiguous_device");
-                Error(Run("messages", "--device", "unknown"), 1, "device_not_found");
-                Require(Rows(Run("messages", "--device", "ALPHA-D")).Length == 7, "prefix selection wrong");
-                Require(Rows(Run("messages", "--device", "alpha-device")).Length == 7, "exact selection wrong");
+                string multi = Path.Combine(temporary, "multiple-profiles");
+                Fixture.Phone(Path.Combine(Fixture.Device(multi, "alpha-device"), "phone.db"));
+                Fixture.Phone(Path.Combine(Fixture.Device(multi, "alpha-backup"), "phone.db"), false);
+                Error(RunAt(multi, "messages"), 1, "ambiguous_device");
+                Error(RunAt(multi, "messages", "--device", "alpha"), 1, "ambiguous_device");
+                Error(RunAt(multi, "messages", "--device", "unknown"), 1, "device_not_found");
+                Require(Rows(RunAt(multi, "messages", "--device", "ALPHA-D")).Length == 7, "prefix selection wrong");
+                Require(Rows(RunAt(multi, "messages", "--device", "alpha-device")).Length == 7, "exact selection wrong");
             });
             Test("all-devices limit remains global", () => {
-                string path = Path.Combine(root, "alpha-backup", "System", "Database", "phone.db");
+                string multi = Path.Combine(temporary, "all-device-limits");
+                Fixture.Phone(Path.Combine(Fixture.Device(multi, "alpha-device"), "phone.db"));
+                string path = Path.Combine(Fixture.Device(multi, "alpha-backup"), "phone.db");
+                Fixture.Phone(path, false);
                 using (var writer = new Writer(path)) writer.Exec($"INSERT INTO message VALUES(1,1,{Fixture.Time + 600000000L},'newest other phone',1);");
-                var rows = Rows(Run("messages", "--all-devices", "--limit", "2"));
+                var rows = Rows(RunAt(multi, "messages", "--all-devices", "--limit", "2"));
                 Require(rows.Length == 2 && rows[0].GetProperty("device_id").GetString() == "alpha-backup", "cross-device ordering/limit wrong");
             });
             Test("failure in a later profile cannot produce partial success JSON", () => {
@@ -255,7 +313,7 @@ internal static partial class Suite
     {
         Test("native boundary rejects writes, ATTACH, PRAGMA changes, and SQL tails", () => {
             using var database = new ReadOnlyDatabase(phone);
-            foreach (string sql in new[] { "DELETE FROM message", "CREATE TABLE bad(x)", "ATTACH DATABASE 'bad.db' AS bad", "PRAGMA journal_mode=DELETE", "WITH a AS (SELECT 1) DELETE FROM message" })
+            foreach (string sql in new[] { "BEGIN", "DELETE FROM message", "CREATE TABLE bad(x)", "ATTACH DATABASE 'bad.db' AS bad", "PRAGMA journal_mode=DELETE", "WITH a AS (SELECT 1) DELETE FROM message" })
                 Throws(() => database.Prepare(sql), "not_read_only");
             Throws(() => database.Prepare("SELECT 1; SELECT 2"), "multiple_statements");
             Require(!File.Exists(Path.Combine(Environment.CurrentDirectory, "bad.db")), "ATTACH created a DB");
@@ -305,7 +363,7 @@ internal static partial class Suite
     private static Result RunAt(string cache, params string[] args) => RunEnv(cache, null, args);
     private static Result RunEnv(string cache, Dictionary<string, string>? environment, params string[] args) =>
         Invoke([args[0], "--library-path", libraries, "--cache-root", cache, .. args.Skip(1)], environment);
-    private static Result Invoke(string[] args, Dictionary<string, string>? environment = null)
+    private static Result Invoke(string[] args, Dictionary<string, string>? environment = null, int timeoutMs = 30000)
     {
         var start = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true,
             StandardOutputEncoding = new UTF8Encoding(false), StandardErrorEncoding = new UTF8Encoding(false) };
@@ -314,7 +372,15 @@ internal static partial class Suite
         using var process = Process.Start(start)!;
         var stdout = process.StandardOutput.ReadToEndAsync();
         var stderr = process.StandardError.ReadToEndAsync();
-        if (!process.WaitForExit(30000)) { process.Kill(true); throw new Exception("CLI timed out"); }
+        if (!process.WaitForExit(timeoutMs))
+        {
+            try { process.Kill(true); }
+            catch (InvalidOperationException) when (process.HasExited) { }
+            process.WaitForExit();
+            _ = stdout.GetAwaiter().GetResult();
+            _ = stderr.GetAwaiter().GetResult();
+            throw new TimeoutException("CLI timed out");
+        }
         return new Result(process.ExitCode, stdout.GetAwaiter().GetResult(), stderr.GetAwaiter().GetResult());
     }
     private static JsonElement Parse(Result result)

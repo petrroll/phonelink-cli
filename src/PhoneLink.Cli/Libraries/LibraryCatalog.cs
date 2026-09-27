@@ -5,7 +5,7 @@ using PhoneLink.Interop;
 
 namespace PhoneLink.Libraries;
 
-internal sealed record TableSpec(string Kind, string Assembly, string TypeName, string Database)
+internal sealed record TableSpec(string Kind, string Assembly, string TypeName)
 {
     public static readonly TableSpec[] Messages = [
         Message("sms", "SmsTable"), Message("mms", "MmsTable"),
@@ -13,8 +13,8 @@ internal sealed record TableSpec(string Kind, string Assembly, string TypeName, 
     ];
     public static readonly TableSpec[] Conversations = [Message("sms_mms", "ConversationTable"), Message("rcs", "RcsConversationTable")];
     public static readonly TableSpec MmsParts = Message("mms_part", "MmsPartTable");
-    public static readonly TableSpec Notifications = new("notification", "YourPhone.Notifications.Managed", "YourPhone.Notifications.WinRT.DataStore.NotificationsTable", "notifications");
-    private static TableSpec Message(string kind, string type) => new(kind, "YourPhone.Messaging.Managed", "YourPhone.Messaging.WinRT.DataStore." + type, "phone");
+    public static readonly TableSpec Notifications = new("notification", "YourPhone.Notifications.Managed", "YourPhone.Notifications.WinRT.DataStore.NotificationsTable");
+    private static TableSpec Message(string kind, string type) => new(kind, "YourPhone.Messaging.Managed", "YourPhone.Messaging.WinRT.DataStore." + type);
 }
 
 internal sealed class LibraryCatalog
@@ -51,13 +51,15 @@ internal sealed class LibraryCatalog
             // app's SqliteConnection/DatabaseBase/IDeviceData constructors.
             var constructor = TableType(spec).GetConstructor([connectionInterface]) ??
                 throw CliException.Contract("Missing read-adapter constructor for " + spec.TypeName + ".");
-            return constructor.Invoke([adapter]);
+            object table = constructor.Invoke([adapter]);
+            database.ThrowIfFaulted();
+            return table;
         });
     }
 
-    public IReadOnlyList<object> CallRows(object table, string method, params object[] args)
+    public IReadOnlyList<object> CallRows(object table, ReadOnlyDatabase database, string method, params object[] args)
     {
-        if (method is not ("GetEntitiesFromIds" or "GetMessagesInThread" or "GetPartsForMessage"))
+        if (method is not ("GetEntitiesFromIds" or "GetPartsForMessage"))
             throw CliException.Contract("This method is not on the read-only invocation allowlist.");
         return Guard(table.GetType().FullName + "." + method, () => {
             using var scope = context.EnterContextualReflection();
@@ -66,7 +68,9 @@ internal sealed class LibraryCatalog
             if (candidates.Length != 1) throw CliException.Contract("Missing or ambiguous read method: " + method + ".");
             object? result = candidates[0].Invoke(table, args);
             if (result is not IEnumerable rows) throw CliException.Contract("Unexpected return type from " + method + ".");
-            return rows.Cast<object>().ToArray();
+            var output = rows.Cast<object>().ToArray();
+            database.ThrowIfFaulted();
+            return output;
         });
     }
 
@@ -102,7 +106,7 @@ internal sealed class LibraryCatalog
                 Type type = TableType(spec);
                 capabilities.Add(new { kind = spec.Kind, type = spec.TypeName,
                     read_by_ids = type.GetMethods().Any(m => m.Name == "GetEntitiesFromIds"),
-                    read_by_thread = type.GetMethods().Any(m => m.Name == "GetMessagesInThread") });
+                    read_parts = type.GetMethods().Any(m => m.Name == "GetPartsForMessage") });
             }
             catch (CliException error) { capabilities.Add(new { kind = spec.Kind, error = error.Code }); }
         }

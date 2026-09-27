@@ -19,12 +19,27 @@ three profiles. The CLI now supplies a read-only storage adapter, obtains
 SELECTs or invoke its migrating database constructors.
 
 A proof using `QueryActivitySince` exposed that method's fixed 5000-row limit.
-The production CLI does not use that method or timestamp-based pagination, so
-large histories and tied timestamps do not silently disappear at that boundary.
+The production CLI uses bounded ID batches for all message filters, including
+`--thread`; it does not call the unbounded `GetMessagesInThread` API or paginate
+by timestamps. Large histories and tied timestamps are covered by synthetic tests.
 
 The normal `YourPhone.Utilities.Database.SqliteConnection` constructor can
 finalize encrypted copies and delete/recreate corrupt files. Do not blindly
 instantiate it against live data. Its constructor is not used by this project.
+
+## Adapter conventions and compatibility limits
+
+The adapter's semantics are based on inspection of Phone Link 1.26091.112.0,
+not on a public contract. It converts stored FILETIME values (including valid
+negative values) to UTC; out-of-range values fail explicitly. Null text becomes
+an empty string, numeric reads of null fail, reset clears bindings, and lazy blob
+metadata uses the library's `<column>_length` projection. The requirement that
+all SQL parameters be bound is an additional strictness check.
+
+Synthetic doubles exercise these conventions but cannot prove that a future
+vendor build still follows them. The first adapter failure is retained so a
+vendor method swallowing that exception cannot turn it into a successful empty
+result. Raw vendor/SQLite diagnostics are not exposed in CLI errors.
 
 ## Windows notification API — separately tested, not this backend
 

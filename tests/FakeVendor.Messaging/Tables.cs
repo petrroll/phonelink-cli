@@ -78,13 +78,26 @@ public abstract class Table(ISqliteConnection connection, string name, string ke
         }
         if (Environment.GetEnvironmentVariable("FIXTURE_THROW_SECRET") == "1")
             throw new InvalidOperationException("synthetic-private-value-do-not-leak");
+        if (Environment.GetEnvironmentVariable("FIXTURE_SQL_ERROR") == "1")
+        {
+            using var invalid = Connection.CreateStatement("SELECT * FROM \"synthetic-private-sql-token\"");
+            invalid.Step();
+        }
+        if (Environment.GetEnvironmentVariable("FIXTURE_SWALLOW_FAILURE") is { } failure)
+        {
+            try
+            {
+                if (failure == "write") { using var rejected = Connection.CreateStatement("DELETE FROM message"); rejected.Step(); }
+                using var invalid = Connection.CreateStatement("SELECT 1 AS value");
+                if (failure == "bind") invalid.BindInt(1, 1);
+                invalid.Step();
+                invalid.ReadInt64("missing");
+            }
+            catch { /* Simulate a defensive vendor returning an empty result. */ }
+            return [];
+        }
+        if (ids.Count > 256) throw new InvalidOperationException("Fixture expected bounded key batches.");
         using var row = Connection.CreateStatement($"SELECT {Projection} FROM {TableName} WHERE {PrimaryKeyName} IN ({string.Join(',', ids)})");
-        return Read(row);
-    }
-    public IReadOnlyList<object> GetMessagesInThread(long thread)
-    {
-        using var row = Connection.CreateStatement($"SELECT {Projection} FROM {TableName} WHERE thread_id = ?");
-        row.BindInt64(1, thread);
         return Read(row);
     }
     protected List<object> Read(ISqliteStatement statement)

@@ -3,7 +3,7 @@
     <OutputType>Exe</OutputType>
     <AssemblyName>phonelink</AssemblyName>
     <RootNamespace>PhoneLink</RootNamespace>
-    <Version>0.1.1</Version>
+    <Version>0.1.2</Version>
     <Description>Unofficial, read-only, library-backed Windows Phone Link CLI.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PublishTrimmed>false</PublishTrimmed>

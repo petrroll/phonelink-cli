@@ -10,22 +10,27 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-dotnet@v5
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: '10.0.x'
       - name: Build and test with synthetic vendor libraries
         shell: pwsh
         run: ./scripts/test.ps1
-      - name: Package CLI (no vendor DLLs or test fixtures)
+      - name: Package CLI (trusted main/tag builds only)
+        id: package
+        if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path artifacts -Force | Out-Null
           Compress-Archive -Path dist/win-x64/phonelink.exe,README.md,SECURITY.md,LICENSE -DestinationPath artifacts/phonelink-win-x64.zip
-      - uses: actions/upload-artifact@v4
+          $hash = (Get-FileHash artifacts/phonelink-win-x64.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText("artifacts/SHA256SUMS.txt", "$hash  phonelink-win-x64.zip`n")
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: steps.package.outcome == 'success'
         with:
           name: phonelink-win-x64
-          path: artifacts/phonelink-win-x64.zip
+          path: artifacts/*
           if-no-files-found: error
