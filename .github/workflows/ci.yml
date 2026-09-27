@@ -16,9 +16,18 @@ jobs:
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: '10.0.x'
+      - name: Reject tracked binary/data artifacts
+        shell: pwsh
+        run: |
+          $forbidden = @(git ls-files | Where-Object { $_ -match '(?i)\.(dll|exe|winmd|pdb|nupkg|zip|db|sqlite|dmp)$|^\.tools/|(^|/)(bin|obj|decompiled)/' })
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect tracked files.' }
+          if ($forbidden.Count) { throw "Binary/vendor/data files must not be committed: $($forbidden -join ', ')" }
       - name: Build and test with synthetic vendor libraries
         shell: pwsh
         run: ./scripts/test.ps1
+      - name: Verify single-file and loose-file distribution guards
+        shell: pwsh
+        run: ./scripts/test-distribution.ps1
       - name: Package CLI (trusted main/tag builds only)
         id: package
         if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))

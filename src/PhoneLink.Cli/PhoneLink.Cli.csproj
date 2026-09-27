@@ -13,4 +13,23 @@
   <ItemGroup>
     <InternalsVisibleTo Include="PhoneLink.Tests" />
   </ItemGroup>
+  <!-- Enforce this before single-file bundling as well as ordinary publishing:
+       checking the ZIP alone cannot detect a DLL hidden inside the executable.
+       Phone Link libraries are runtime inputs, never redistribution inputs. -->
+  <Target Name="CheckCliPublishContents"
+          BeforeTargets="GenerateSingleFileBundle;CopyFilesToPublishDirectory"
+          DependsOnTargets="ComputeResolvedFilesToPublishList;PrepareForBundle">
+    <ItemGroup>
+      <_CliPublishPayload Include="@(FilesToBundle);@(ResolvedFileToPublish)" />
+      <_UnexpectedCliPayload Include="@(_CliPublishPayload)"
+          Condition="'%(_CliPublishPayload.RelativePath)' != '$(AssemblyName).dll' and
+                     '%(_CliPublishPayload.RelativePath)' != '$(AssemblyName).exe' and
+                     '%(_CliPublishPayload.RelativePath)' != '$(AssemblyName).deps.json' and
+                     '%(_CliPublishPayload.RelativePath)' != '$(AssemblyName).runtimeconfig.json'" />
+    </ItemGroup>
+    <Error Code="PLINK001" Condition="'@(_UnexpectedCliPayload)' != ''"
+           Text="Refusing unexpected CLI publish/bundle inputs: @(_UnexpectedCliPayload->'%(RelativePath)', ', '). Do not ship vendor libraries, test doubles, or data." />
+    <Error Code="PLINK002" Condition="'@(_CliPublishPayload)' == ''"
+           Text="Cannot verify CLI distribution: no publish inputs were resolved." />
+  </Target>
 </Project>

@@ -27,8 +27,12 @@ force synchronization, send/reply, dismiss notifications, or mark messages read.
 Use a [tagged release](https://github.com/petrroll/phonelink-cli/releases), or build
 below. CI publishes artifacts only from `main` and version tags, not pull-request
 runs. The ZIP contains `phonelink.exe`, README, security notes, and the MIT license;
-SHA-256 sums accompany it. No Microsoft Phone Link DLLs or user data are bundled.
-The executable needs the runtime, but not an SDK or PowerShell.
+SHA-256 sums accompany it. **No Microsoft Phone Link or other non-.NET product
+libraries are shipped**, either beside the executable or hidden in its single-file
+bundle. Phone Link DLLs are located on the user's PC at runtime; Windows libraries
+such as `winsqlite3.dll` are loaded from the OS. The framework-dependent bundle
+contains only our `phonelink.dll` and its .NET configuration files; the executable
+needs an installed .NET runtime, not an SDK or PowerShell.
 
 ```powershell
 .\phonelink.exe doctor --pretty
@@ -214,10 +218,16 @@ dotnet publish src/PhoneLink.Cli -c Release -r win-x64 --self-contained false -p
 ```
 
 Tests use **original synthetic vendor doubles and temporary Windows DBs**, never
-personal phone data. They cover batching/large histories, filters, Unicode,
+personal phone data or copied/decompiled Microsoft implementations. The doubles
+compile to vendor-like DLL names only to exercise discovery; they are our own
+source, are not committed as binaries, and are not shipped. See
+[fixture provenance](tests/README.md). They cover batching/large histories, filters, Unicode,
 64-bit IDs, privacy failures, partial profiles, discovery, DLL lookup, and locking.
-They prove our adapter's internal contract—not future vendor compatibility. Local
-live checks are separate and do not save message content. See the
+They prove our adapter's internal contract—not future vendor compatibility. A
+pre-bundle publish allowlist rejects unexpected files (including accidentally
+referenced vendor/test DLLs); CI tests that rejection using harmless text fixtures
+and rejects tracked binary/data artifacts. Local live checks are separate and do
+not save message content. See the
 [whole-code review summary](docs/review.md) for the independent Opus 5.5/Astra review.
 
 ## License

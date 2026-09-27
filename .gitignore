@@ -9,6 +9,14 @@ artifacts/
 *.user
 *.suo
 
+# Source-only repository: do not lift installed/vendor binaries into fixtures
+*.dll
+*.exe
+*.winmd
+*.pdb
+*.nupkg
+*.zip
+
 # Never commit personal Phone Link data, logs, or exported messages
 exports/
 *.db

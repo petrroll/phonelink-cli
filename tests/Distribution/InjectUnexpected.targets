@@ -1,0 +1,9 @@
+<Project>
+  <!-- Test-only: the caller creates a harmless text file, not a vendor binary. -->
+  <Target Name="InjectUnexpectedDistributionFile" BeforeTargets="CheckCliPublishContents">
+    <ItemGroup Condition="'$(DistributionTestFile)' != ''">
+      <FilesToBundle Include="$(DistributionTestFile)" RelativePath="unexpected-vendor.dll" Condition="'$(PublishSingleFile)' == 'true'" />
+      <ResolvedFileToPublish Include="$(DistributionTestFile)" RelativePath="unexpected-vendor.dll" CopyToPublishDirectory="Always" />
+    </ItemGroup>
+  </Target>
+</Project>
